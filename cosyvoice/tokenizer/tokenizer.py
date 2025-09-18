@@ -239,7 +239,7 @@ def get_tokenizer(
 
 
 class QwenTokenizer():
-    def __init__(self, token_path, skip_special_tokens=True):
+    def __init__(self, token_path, skip_special_tokens=True, speaker_file=None):
         super().__init__()
         # NOTE: non-chat model, all these special tokens keep randomly initialized.
         special_tokens = {
@@ -255,6 +255,17 @@ class QwenTokenizer():
                 "[lipsmack]", "[mn]"
             ]
         }
+        # add speaker tokens
+        if speaker_file is not None and os.path.isfile(speaker_file):
+            with open(speaker_file, "r", encoding="utf-8") as f:
+                speaker_names = [line.strip() for line in f if line.strip()]
+            speaker_tokens = [f"<|spk:{name}|>" for name in speaker_names]
+            special_tokens['additional_special_tokens'].extend(speaker_tokens)
+
+        # add lang tokens
+        lang_tokens = [f"<|{lang}|>" for lang in list(LANGUAGES.keys())]
+        special_tokens['additional_special_tokens'].extend(lang_tokens)
+
         self.special_tokens = special_tokens
         self.tokenizer = AutoTokenizer.from_pretrained(token_path)
         self.tokenizer.add_special_tokens(special_tokens)
@@ -274,6 +285,7 @@ class QwenTokenizer():
 @lru_cache(maxsize=None)
 def get_qwen_tokenizer(
     token_path: str,
-    skip_special_tokens: bool
+    skip_special_tokens: bool,
+    speaker_file: str = None
 ) -> QwenTokenizer:
-    return QwenTokenizer(token_path=token_path, skip_special_tokens=skip_special_tokens)
+    return QwenTokenizer(token_path=token_path, skip_special_tokens=skip_special_tokens, speaker_file=speaker_file)
