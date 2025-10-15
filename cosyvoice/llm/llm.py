@@ -161,6 +161,7 @@ class TransformerLM(torch.nn.Module):
                 raise RuntimeError('sampling reaches max_trials {} and still get eos when ignore_eos is True, check your input!'.format(max_trials))
         return top_ids
 
+    
     @torch.inference_mode()
     def inference(
             self,
@@ -609,3 +610,251 @@ class Qwen2LM(TransformerLM):
             # in stream mode, yield token one by one
             yield top_ids
             lm_input = self.speech_embedding.weight[top_ids].reshape(1, 1, -1)
+
+    ### wkc added
+    @torch.inference_mode()
+    def inference_batch(
+            self,
+            texts: torch.Tensor,
+            texts_len: torch.Tensor,
+            prompt_text: torch.Tensor,
+            prompt_text_len: torch.Tensor,
+            prompt_speech_token: torch.Tensor,
+            prompt_speech_token_len: torch.Tensor,
+            embedding: torch.Tensor,
+            sampling: int = 25,
+            max_token_text_ratio: float = 20,
+            min_token_text_ratio: float = 2,
+            uuid: str = '',
+    ) -> Generator[torch.Tensor, None, None]:
+        batch_size = texts.shape[0]
+        device = texts.device
+        texts = torch.concat([prompt_text.expand(batch_size, -1), texts], dim=1)
+        texts_len += prompt_text_len
+        texts = self.llm.model.model.embed_tokens(texts)
+
+        sos_eos_emb = self.llm_embedding.weight[self.sos_eos].reshape(1, 1, -1)
+        task_id_emb = self.llm_embedding.weight[self.task_id].reshape(1, 1, -1)
+
+        if prompt_speech_token_len != 0:
+            prompt_speech_token_emb = self.speech_embedding(prompt_speech_token)
+        else:
+            prompt_speech_token_emb = torch.zeros(1, 0, self.llm_input_size, dtype=texts.dtype).to(device)
+
+        processed_seqs = []
+        for i in range(batch_size):
+            valid_text = texts[i, :texts_len[i], :].unsqueeze(0)
+            padding_part = texts[i, texts_len[i]:, :].unsqueeze(0)
+            new_seq = torch.cat([padding_part, sos_eos_emb, valid_text, task_id_emb, prompt_speech_token_emb], dim=1)
+            processed_seqs.append(new_seq)
+        lm_input = torch.cat(processed_seqs, dim=0)
+        lm_input_len = texts_len + 2 + prompt_speech_token_emb.shape[1]
+        #lm_input = torch.concat([sos_eos_emb, texts, task_id_emb, prompt_speech_token_emb], dim=1)
+
+        # 4. cal min/max_length
+        min_len = ((texts_len - prompt_text_len) * min_token_text_ratio).to(torch.int)
+        max_len = ((texts_len - prompt_text_len) * max_token_text_ratio).to(torch.int)
+
+        logging.info("In llm.inference_batch")
+        # 5. step by step decode
+        for token in self.inference_wrapper_batch(lm_input, lm_input_len, sampling, min_len, max_len, uuid):
+            yield token
+
+    @torch.inference_mode()
+    def inference_wrapper_batch(self, lm_input, lm_input_len, sampling, min_len, max_len, uuid):
+        """
+        批量版本的推理包装器
+        Args:
+            lm_input: 形状为 (batch_size, seq_len, hidden_size) 的初始输入
+            sampling: 采样参数
+            min_len: 每个样本的最小生成长度，形状为 (batch_size,)
+            max_len: 每个样本的最大生成长度，形状为 (batch_size,)
+            uuid: 批次标识符
+        Yields:
+            每次生成一个批次的token，形状为 (batch_size,)
+        """
+
+        # if hasattr(self, 'vllm'):
+        #     from vllm import SamplingParams, RequestOutput
+        #     sampling_params = SamplingParams(top_k=sampling,
+        #                                         stop_token_ids=self.stop_token_ids,
+        #                                         min_tokens=min_len,
+        #                                         max_tokens=max_len)
+        #     with self.lock:
+        #         self.vllm.add_request(uuid, {"prompt_embeds": lm_input.squeeze(0).to(torch.bfloat16).to(lm_input.device)}, sampling_params)
+        #         self.vllm_output_queue[uuid] = queue.Queue()
+        #     out_tokens = []
+        #     while True:
+        #         with self.lock:
+        #             if self.vllm_output_queue[uuid].empty() is True:
+        #                 request_outputs: List[RequestOutput] = self.vllm.step()
+        #                 for request_output in request_outputs:
+        #                     top_ids = list(request_output.outputs[0].token_ids)[-1]
+        #                     self.vllm_output_queue[request_output.request_id].put(top_ids)
+        #         if self.vllm_output_queue[uuid].empty() is False:
+        #             top_ids = self.vllm_output_queue[uuid].get()
+        #             if top_ids in self.stop_token_ids:
+        #                 break
+        #             # in stream mode, yield token one by one
+        #             yield top_ids
+        #             out_tokens.append(top_ids)
+        #             if len(out_tokens) == max_len:
+        #                 break
+        #         time.sleep(0.001)
+        #     with self.lock:
+        #         self.vllm_output_queue.pop(uuid)
+        # else:
+        #     out_tokens = []
+        #     cache = None
+        #     for i in range(max_len):
+        #         y_pred, cache = self.llm.forward_one_step(lm_input,
+        #                                                     masks=torch.tril(torch.ones((1, lm_input.shape[1], lm_input.shape[1]), device=lm_input.device)).to(torch.bool),
+        #                                                     cache=cache)
+        #         logp = self.llm_decoder(y_pred[:, -1]).log_softmax(dim=-1)
+        #         top_ids = self.sampling_ids(logp.squeeze(dim=0), out_tokens, sampling, ignore_eos=True if i < min_len else False).item()
+        #         if top_ids == self.speech_token_size:
+        #             break
+        #         if top_ids > self.speech_token_size:
+        #             continue
+        #         # in stream mode, yield token one by one
+        #         yield top_ids
+        #         out_tokens.append(top_ids)
+        #         lm_input = self.speech_embedding.weight[top_ids].reshape(1, 1, -1)
+
+        batch_size = lm_input.size(0)
+        device = lm_input.device
+
+        active_mask = torch.ones(batch_size, dtype=torch.bool, device=device)  # 标记哪些样本仍在生成
+        out_tokens_list = [[] for _ in range(batch_size)]  # 为每个样本维护独立的token历史列表
+        cache = None
+        max_max_len = max_len.max().item()
+
+        logging.info("Before llm.forward_one_step")
+        logging.info(f"lm_input.shape {lm_input.shape}")
+        for i in range(max_max_len):
+            reached_max_len = (i >= max_len) & active_mask
+            active_mask &= ~reached_max_len
+
+            current_seq_len = lm_input.shape[1]
+            causal_mask = torch.tril(torch.ones((batch_size, current_seq_len, current_seq_len), device=lm_input.device)).to(torch.bool)
+
+            # 生成位置索引矩阵，形状为 (batch_size, current_seq_len)
+            pos_indices = torch.arange(current_seq_len, device=lm_input.device).expand(batch_size, current_seq_len)
+
+            # 有效内容从 (总长度 - 有效长度) 的索引开始
+            start_indices = current_seq_len - lm_input_len  # 形状 (batch_size,)
+            start_indices_expanded = start_indices.unsqueeze(1).expand(-1, current_seq_len)
+
+            # 生成正确的二维填充掩码：位置索引 >= 起始索引 的位置为有效Token (True)
+            padding_mask_2d = pos_indices >= start_indices_expanded
+
+            # 后续步骤保持不变：将二维掩码扩展为三维注意力掩码
+            padding_mask = padding_mask_2d.unsqueeze(1) & padding_mask_2d.unsqueeze(2)
+
+            masks = causal_mask & padding_mask
+            #masks = torch.tril(torch.ones((batch_size, lm_input.shape[1], lm_input.shape[1]), device=lm_input.device)).to(torch.bool)
+            y_pred, cache = self.llm.forward_one_step(lm_input,
+                                                        masks=masks,
+                                                        cache=cache)
+            #logging.info(f"y_pred.shape {y_pred.shape}")
+            logp = self.llm_decoder(y_pred[:, -1]).log_softmax(dim=-1) # (batch_size, vocab_size)
+            #logging.info(f"logp.shape {logp.shape}")
+            ignore_eos_list = [i < min_len[idx].item() for idx in range(batch_size)]
+            top_ids_batch = self.sampling_ids_batch(logp, out_tokens_list, sampling, ignore_eos_list=ignore_eos_list)
+
+            hit_eos = (top_ids_batch == self.speech_token_size) & active_mask
+            active_mask &= ~hit_eos
+
+            if not active_mask.any():
+                break  # 所有样本都已完成生成
+
+            ignore = (top_ids_batch > self.speech_token_size) & active_mask
+
+            if not ignore.any():
+                yield top_ids_batch, active_mask.clone()
+
+                for i in range(batch_size):
+                    if active_mask[i]:
+                        out_tokens_list[i].append(top_ids_batch[i].item())
+                lm_input = self.speech_embedding.weight[top_ids_batch].reshape(batch_size, 1, -1)
+
+
+    def sampling_ids_batch(
+            self,
+            weighted_scores: torch.Tensor,
+            decoded_tokens_list: List[List[int]],
+            sampling: int,
+            ignore_eos_list: List[bool],
+            max_trials: int = 100
+    ):
+        # num_trials, max_trials = 0, 100
+        # while True:
+        #     top_ids = self.sampling(weighted_scores, decoded_tokens, sampling)
+        #     if (not ignore_eos) or (self.speech_token_size not in top_ids):
+        #         break
+        #     num_trials += 1
+        #     if num_trials > max_trials:
+        #         raise RuntimeError('sampling reaches max_trials {} and still get eos when ignore_eos is True, check your input!'.format(max_trials))
+        # return top_ids
+
+        batch_size = weighted_scores.size(0)
+        device = weighted_scores.device
+
+        final_top_ids = torch.zeros(batch_size, dtype=torch.long, device=device)
+        trials_count = torch.zeros(batch_size, dtype=torch.long, device=device)
+        completed_mask = torch.zeros(batch_size, dtype=torch.bool, device=device)
+
+        # 初始时所有样本都需要处理
+        active_mask = torch.ones(batch_size, dtype=torch.bool, device=device)
+
+        while active_mask.any() and trials_count.max() < max_trials:
+            # 获取当前需要处理的样本索引
+            active_indices = active_mask.nonzero(as_tuple=True)[0]
+
+            for idx in active_indices:
+                if completed_mask[idx]:
+                    continue
+
+                # 获取当前样本的数据
+                sample_scores = weighted_scores[idx]
+                sample_history = decoded_tokens_list[idx] if decoded_tokens_list else []
+                sample_ignore_eos = ignore_eos_list[idx]
+
+                # 使用原有的sampling函数进行采样
+                top_ids = self.sampling(sample_scores, sample_history, sampling)
+                final_top_ids[idx] = top_ids
+                trials_count[idx] += 1
+
+                # 检查停止条件：根据该样本独立的ignore_eos设置
+                if (not sample_ignore_eos) or (self.speech_token_size not in top_ids):
+                    completed_mask[idx] = True
+                    active_mask[idx] = False
+                else:
+                    # 如果采样到EOS且需要忽略，继续尝试
+                    if trials_count[idx] > max_trials:
+                        # 达到最大尝试次数，强制完成并记录错误
+                        completed_mask[idx] = True
+                        active_mask[idx] = False
+
+            # 更新active_mask：只包含未完成的样本
+            active_mask = ~completed_mask
+
+        # 检查是否有样本超过最大尝试次数
+        exceeded_max_trials = trials_count > max_trials
+        if exceeded_max_trials.any():
+            problematic_indices = exceeded_max_trials.nonzero(as_tuple=True)[0]
+            problematic_samples = []
+            for idx in problematic_indices:
+                sample_info = {
+                    'index': idx.item(),
+                    'trials': trials_count[idx].item(),
+                    'ignore_eos': ignore_eos_list[idx],
+                    'final_token': final_top_ids[idx].item()
+                }
+                problematic_samples.append(sample_info)
+
+            raise RuntimeError(
+                f'{len(problematic_samples)} samples reach max_trials {max_trials} and still get eos when ignore_eos is True, check your input! Problematic samples: {problematic_samples}'
+            )
+
+        return final_top_ids

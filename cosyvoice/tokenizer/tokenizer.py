@@ -261,6 +261,8 @@ class QwenTokenizer():
                 speaker_names = [line.strip() for line in f if line.strip()]
             speaker_tokens = [f"<|spk:{name}|>" for name in speaker_names]
             special_tokens['additional_special_tokens'].extend(speaker_tokens)
+        #else:
+        #    print(f"Speaker file not found: {speaker_file}")
 
         # add lang tokens
         lang_tokens = [f"<|{lang}|>" for lang in list(LANGUAGES.keys())]
@@ -275,6 +277,14 @@ class QwenTokenizer():
         tokens = self.tokenizer([text], return_tensors="pt")
         tokens = tokens["input_ids"][0].cpu().tolist()
         return tokens
+
+    ### wkc added
+    def encode_batch(self, text, **kwargs):
+        tokens_dict = self.tokenizer(text, return_tensors="pt", padding=True, truncation=True)
+        tokens = tokens_dict["input_ids"].cpu().tolist()
+        #attention_mask = tokens_dict["attention_mask"].cpu().tolist()
+        valid_lengths = tokens_dict["attention_mask"].sum(dim=1).cpu().tolist()
+        return tokens, valid_lengths
 
     def decode(self, tokens):
         tokens = torch.tensor(tokens, dtype=torch.int64)
