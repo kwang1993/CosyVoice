@@ -802,7 +802,6 @@ class Qwen2LM(TransformerLM):
 
         final_top_ids = torch.zeros(batch_size, dtype=torch.long, device=device)
         trials_count = torch.zeros(batch_size, dtype=torch.long, device=device)
-        completed_mask = torch.zeros(batch_size, dtype=torch.bool, device=device)
 
         # 初始时所有样本都需要处理
         active_mask = torch.ones(batch_size, dtype=torch.bool, device=device)
@@ -812,7 +811,7 @@ class Qwen2LM(TransformerLM):
             active_indices = active_mask.nonzero(as_tuple=True)[0]
 
             for idx in active_indices:
-                if completed_mask[idx]:
+                if not active_mask[idx]:
                     continue
 
                 # 获取当前样本的数据
@@ -827,17 +826,12 @@ class Qwen2LM(TransformerLM):
 
                 # 检查停止条件：根据该样本独立的ignore_eos设置
                 if (not sample_ignore_eos) or (self.speech_token_size not in top_ids):
-                    completed_mask[idx] = True
                     active_mask[idx] = False
                 else:
                     # 如果采样到EOS且需要忽略，继续尝试
                     if trials_count[idx] > max_trials:
                         # 达到最大尝试次数，强制完成并记录错误
-                        completed_mask[idx] = True
                         active_mask[idx] = False
-
-            # 更新active_mask：只包含未完成的样本
-            active_mask = ~completed_mask
 
         # 检查是否有样本超过最大尝试次数
         exceeded_max_trials = trials_count > max_trials
