@@ -386,6 +386,49 @@ class CosyVoice2Model(CosyVoiceModel):
             torch.cuda.current_stream().synchronize()
 
     ### wkc added
+    def token2wav_batch(self, token, token_len, prompt_token, prompt_feat, embedding, token_offset, uuid, stream=False, finalize=False, speed=1.0):
+        batch_size = token.size(0)
+        with torch.cuda.amp.autocast(self.fp16):
+            tts_mel, tts_mel_lengths = self.flow.inference_batch(token=token.to(self.device),
+                                                    token_len=torch.tensor(token_len, dtype=torch.int32).to(self.device),
+                                                    prompt_token=prompt_token.to(self.device),
+                                                    prompt_token_len=torch.tensor([prompt_token.shape[1]], dtype=torch.int32).to(self.device),
+                                                    prompt_feat=prompt_feat.to(self.device),
+                                                    prompt_feat_len=torch.tensor([prompt_feat.shape[1]], dtype=torch.int32).to(self.device),
+                                                    embedding=embedding.to(self.device),
+                                                    streaming=stream,
+                                                    finalize=finalize)
+        tts_mel = tts_mel[:, :, token_offset * self.flow.token_mel_ratio:] # (B, D, T)
+        # append hift cache
+        if self.hift_cache_dict[uuid] is not None:
+            hift_cache_mel, hift_cache_source = self.hift_cache_dict[uuid]['mel'], self.hift_cache_dict[uuid]['source']
+            tts_mel = torch.concat([hift_cache_mel, tts_mel], dim=2)
+        else:
+            hift_cache_source = torch.zeros(batch_size, 1, 0)
+        # keep overlap mel and hift cache
+        if finalize is False:
+            tts_speech, tts_source = self.hift.inference(speech_feat=tts_mel, cache_source=hift_cache_source)
+            if self.hift_cache_dict[uuid] is not None:
+                tts_speech = fade_in_out(tts_speech, self.hift_cache_dict[uuid]['speech'], self.speech_window)
+            self.hift_cache_dict[uuid] = {'mel': tts_mel[:, :, -self.mel_cache_len:],
+                                          'source': tts_source[:, :, -self.source_cache_len:],
+                                          'speech': tts_speech[:, -self.source_cache_len:]}
+            tts_speech = tts_speech[:, :-self.source_cache_len]
+        else:
+            if speed != 1.0:
+                assert self.hift_cache_dict[uuid] is None, 'speed change only support non-stream inference mode'
+                tts_mel = F.interpolate(tts_mel, size=int(tts_mel.shape[2] / speed), mode='linear')
+                tts_mel_lengths = (tts_mel_lengths / speed).to(torch.int)  # 将结果转换为整数
+
+            tts_speech, tts_source = self.hift.inference(speech_feat=tts_mel, cache_source=hift_cache_source)
+            if self.hift_cache_dict[uuid] is not None:
+                tts_speech = fade_in_out(tts_speech, self.hift_cache_dict[uuid]['speech'], self.speech_window)
+        logging.info(f"tts_mel.shape {tts_mel.shape}")
+        logging.info(f"tts_mel_lengths {tts_mel_lengths}")
+        tts_speech_lengths = (tts_speech.shape[1] * tts_mel_lengths/tts_mel.shape[2]).to(torch.int)
+        return tts_speech, tts_speech_lengths
+
+    ### wkc added
     def tts_batch(self, text=torch.zeros(1, 0, dtype=torch.int32), text_len=torch.zeros(1, dtype=torch.int32), flow_embedding=torch.zeros(0, 192), llm_embedding=torch.zeros(0, 192),
             prompt_text=torch.zeros(1, 0, dtype=torch.int32),
             llm_prompt_speech_token=torch.zeros(1, 0, dtype=torch.int32),
@@ -439,18 +482,38 @@ class CosyVoice2Model(CosyVoiceModel):
             # deal with all tokens
             p.join()
             logging.info("After llm_job_batch")
-            for idx in range(batch_size):
-                this_tts_speech_token = torch.tensor(self.tts_speech_token_dict[this_uuid][idx]).unsqueeze(dim=0)
-                this_tts_speech = self.token2wav(token=this_tts_speech_token,
-                                                    prompt_token=flow_prompt_speech_token,
-                                                    prompt_feat=prompt_speech_feat,
-                                                    embedding=flow_embedding,
-                                                    token_offset=0,
-                                                    uuid=this_uuid,
-                                                    finalize=True,
-                                                    speed=speed)
-                #logging.info(f"this_tts_speech.shape {this_tts_speech.shape}")
-                yield {'tts_speech': this_tts_speech.cpu()}
+            # for idx in range(batch_size):
+            #     this_tts_speech_token = torch.tensor(self.tts_speech_token_dict[this_uuid][idx]).unsqueeze(dim=0)
+            #     this_tts_speech = self.token2wav(token=this_tts_speech_token,
+            #                                         prompt_token=flow_prompt_speech_token,
+            #                                         prompt_feat=prompt_speech_feat,
+            #                                         embedding=flow_embedding,
+            #                                         token_offset=0,
+            #                                         uuid=this_uuid,
+            #                                         finalize=True,
+            #                                         speed=speed)
+            #     #logging.info(f"this_tts_speech.shape {this_tts_speech.shape}")
+            #     yield {'tts_speech': this_tts_speech.cpu()}
+            list_of_token_lists = self.tts_speech_token_dict[this_uuid]
+            list_of_tensors = [torch.tensor(token_list) for token_list in list_of_token_lists]
+            this_tts_speech_token = torch.nn.utils.rnn.pad_sequence(list_of_tensors, batch_first=True)
+            this_tts_speech_token_len = [len(tts_speech_tokens) for tts_speech_tokens in self.tts_speech_token_dict[this_uuid]]
+            logging.info(f"this_tts_speech_token.shape {this_tts_speech_token.shape}")
+            logging.info(f"this_tts_speech_token_len {this_tts_speech_token_len}")
+
+            this_tts_speech, tts_speech_lengths = self.token2wav_batch(token=this_tts_speech_token,
+                                                token_len=this_tts_speech_token_len,
+                                                prompt_token=flow_prompt_speech_token,
+                                                prompt_feat=prompt_speech_feat,
+                                                embedding=flow_embedding,
+                                                token_offset=0,
+                                                uuid=this_uuid,
+                                                finalize=True,
+                                                speed=speed)
+            logging.info(f"this_tts_speech.shape {this_tts_speech.shape}, tts_speech_lengths {tts_speech_lengths}")
+            for i, tts_speech in enumerate(this_tts_speech):
+                tts_speech = this_tts_speech[i][:tts_speech_lengths[i]].unsqueeze(0)
+                yield {'tts_speech': tts_speech.cpu()}
 
         with self.lock:
             self.tts_speech_token_dict.pop(this_uuid)

@@ -89,22 +89,43 @@ class ConditionalCFM(BASECFM):
         # I am storing this because I can later plot it by putting a debugger here and saving it to a file
         # Or in future might add like a return_all_steps flag
         sol = []
+        
+        if x.size(0) == 1:
+            # Do not use concat, it may cause memory format changed and trt infer with wrong results!
+            x_in = torch.zeros([2, 80, x.size(2)], device=x.device, dtype=x.dtype)
+            mask_in = torch.zeros([2, 1, x.size(2)], device=x.device, dtype=x.dtype)
+            mu_in = torch.zeros([2, 80, x.size(2)], device=x.device, dtype=x.dtype)
+            t_in = torch.zeros([2], device=x.device, dtype=x.dtype)
+            spks_in = torch.zeros([2, 80], device=x.device, dtype=x.dtype)
+            cond_in = torch.zeros([2, 80, x.size(2)], device=x.device, dtype=x.dtype)
+        else:
+            # Do not use concat, it may cause memory format changed and trt infer with wrong results!
+            x_in = torch.zeros([x.size(0) * 2, 80, x.size(2)], device=x.device, dtype=x.dtype)
+            mask_in = torch.zeros([x.size(0) * 2, 1, x.size(2)], device=x.device, dtype=x.dtype)
+            mu_in = torch.zeros([x.size(0) * 2, 80, x.size(2)], device=x.device, dtype=x.dtype)
+            t_in = torch.zeros([x.size(0) * 2], device=x.device, dtype=x.dtype)
+            spks_in = torch.zeros([x.size(0) * 2, 80], device=x.device, dtype=x.dtype)
+            cond_in = torch.zeros([x.size(0) * 2, 80, x.size(2)], device=x.device, dtype=x.dtype)
 
-        # Do not use concat, it may cause memory format changed and trt infer with wrong results!
-        x_in = torch.zeros([2, 80, x.size(2)], device=x.device, dtype=x.dtype)
-        mask_in = torch.zeros([2, 1, x.size(2)], device=x.device, dtype=x.dtype)
-        mu_in = torch.zeros([2, 80, x.size(2)], device=x.device, dtype=x.dtype)
-        t_in = torch.zeros([2], device=x.device, dtype=x.dtype)
-        spks_in = torch.zeros([2, 80], device=x.device, dtype=x.dtype)
-        cond_in = torch.zeros([2, 80, x.size(2)], device=x.device, dtype=x.dtype)
         for step in range(1, len(t_span)):
             # Classifier-Free Guidance inference introduced in VoiceBox
-            x_in[:] = x
-            mask_in[:] = mask
-            mu_in[0] = mu
-            t_in[:] = t.unsqueeze(0)
-            spks_in[0] = spks
-            cond_in[0] = cond
+            if x.size(0) == 1:
+                x_in[:] = x
+                mask_in[:] = mask
+                mu_in[0] = mu
+                t_in[:] = t.unsqueeze(0)
+                spks_in[0] = spks
+                cond_in[0] = cond
+            else:
+                x_in[:x.size(0)] = x      # 前一半：有条件分支
+                x_in[x.size(0):] = x      # 后一半：无条件分支
+                mask_in[:mask.size(0)] = mask
+                mask_in[mask.size(0):] = mask                
+                mu_in[:mu.size(0)] = mu                      # 前一半：真实条件
+                t_in[:] = t.expand(x_in.size(0))             # 时间步复制到所有样本
+                spks_in[:spks.size(0)] = spks                # 前一半：真实说话人嵌入
+                cond_in[:cond.size(0)] = cond                # 前一半：真实条件
+
             dphi_dt = self.forward_estimator(
                 x_in, mask_in,
                 mu_in, t_in,
@@ -219,7 +240,9 @@ class CausalConditionalCFM(ConditionalCFM):
                 shape: (batch_size, n_feats, mel_timesteps)
         """
 
-        z = self.rand_noise[:, :, :mu.size(2)].to(mu.device).to(mu.dtype) * temperature
+        batch_size = mu.size(0)
+        rand_noise = self.rand_noise[:, :, :mu.size(2)].expand(batch_size, -1, -1)
+        z = rand_noise.to(mu.device).to(mu.dtype) * temperature
         # fix prompt and overlap part mu and z
         t_span = torch.linspace(0, 1, n_timesteps + 1, device=mu.device, dtype=mu.dtype)
         if self.t_scheduler == 'cosine':

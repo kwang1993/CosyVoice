@@ -117,7 +117,7 @@ class CosyVoice:
             speech_len = model_output['tts_speech'].shape[1] / self.sample_rate
             total_speech_len += speech_len
             logging.info('yield speech len {}'.format(speech_len))
-            if i == batch_size - 1: 
+            if i == batch_size - 1:
                 logging.info('yield total speech len {}, avg rtf {}'.format(total_speech_len, (time.time() - start_time) / total_speech_len))
             yield model_output
 

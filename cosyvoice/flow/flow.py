@@ -279,3 +279,58 @@ class CausalMaskedDiffWithXvec(torch.nn.Module):
         feat = feat[:, :, mel_len1:]
         assert feat.shape[2] == mel_len2
         return feat.float(), None
+
+    @torch.inference_mode()
+    def inference_batch(self,
+                  token, # (batch_size, seq_len)
+                  token_len, # (batch_size,)
+                  prompt_token,
+                  prompt_token_len,
+                  prompt_feat,
+                  prompt_feat_len,
+                  embedding,
+                  streaming,
+                  finalize):
+
+        # xvec projection
+        embedding = F.normalize(embedding, dim=1)
+        embedding = self.spk_embed_affine_layer(embedding)
+
+        # concat text and prompt_text
+        batch_size = token.size(0)
+        token, token_len = torch.concat([prompt_token.expand(batch_size, -1), token], dim=1), prompt_token_len + token_len
+        mask = (~make_pad_mask(token_len)).unsqueeze(-1).to(embedding)
+        token = self.input_embedding(torch.clamp(token, min=0)) * mask
+
+        # text encode
+        if finalize is True:
+            h, h_masks = self.encoder(token, token_len, streaming=streaming)
+        else:
+            token, context = token[:, :-self.pre_lookahead_len], token[:, -self.pre_lookahead_len:]
+            h, h_masks = self.encoder(token, token_len, context=context, streaming=streaming)
+        # h_masks (B, 1, T)
+        h_lengths = h_masks.squeeze(1).sum(dim=1)
+        mel_len1, mel_len2 = prompt_feat.shape[1], h_lengths - prompt_feat.shape[1]
+        # mel_len2 (B,)
+        # logging.info(f"mel_len1 {mel_len1}, mel_len2 {mel_len2}, h.shape {h.shape}")
+        h = self.encoder_proj(h)
+
+        # get conditions
+        max_total_len = (mel_len1 + mel_len2).max().item()
+        conds = torch.zeros([batch_size, max_total_len, self.output_size], device=token.device).to(h.dtype)
+        conds[:, :mel_len1] = prompt_feat
+        conds = conds.transpose(1, 2) # (B, D, T)
+
+        # mask = (~make_pad_mask(torch.tensor([mel_len1 + mel_len2]))).to(h)
+        mask = (~make_pad_mask(h_lengths)).to(h)
+        feat, _ = self.decoder(
+            mu=h.transpose(1, 2).contiguous(),
+            mask=mask.unsqueeze(1), # (B, 1, T)
+            spks=embedding,
+            cond=conds,
+            n_timesteps=10,
+            streaming=streaming
+        )
+        feat = feat[:, :, mel_len1:]
+        assert feat.shape[2] == max_total_len - mel_len1
+        return feat.float(), mel_len2
