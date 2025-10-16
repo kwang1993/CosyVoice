@@ -720,63 +720,65 @@ class Qwen2LM(TransformerLM):
         #         yield top_ids
         #         out_tokens.append(top_ids)
         #         lm_input = self.speech_embedding.weight[top_ids].reshape(1, 1, -1)
+        if hasattr(self, 'vllm'):
+            raise NotImplementedError("vllm not supported")
+        else:
+            batch_size = lm_input.size(0)
+            device = lm_input.device
 
-        batch_size = lm_input.size(0)
-        device = lm_input.device
+            active_mask = torch.ones(batch_size, dtype=torch.bool, device=device)  # 标记哪些样本仍在生成
+            out_tokens_list = [[] for _ in range(batch_size)]  # 为每个样本维护独立的token历史列表
+            cache = None
+            max_max_len = max_len.max().item()
 
-        active_mask = torch.ones(batch_size, dtype=torch.bool, device=device)  # 标记哪些样本仍在生成
-        out_tokens_list = [[] for _ in range(batch_size)]  # 为每个样本维护独立的token历史列表
-        cache = None
-        max_max_len = max_len.max().item()
+            logging.info("Before llm.forward_one_step")
+            logging.info(f"lm_input.shape {lm_input.shape}")
+            for i in range(max_max_len):
+                reached_max_len = (i >= max_len) & active_mask
+                active_mask &= ~reached_max_len
 
-        logging.info("Before llm.forward_one_step")
-        logging.info(f"lm_input.shape {lm_input.shape}")
-        for i in range(max_max_len):
-            reached_max_len = (i >= max_len) & active_mask
-            active_mask &= ~reached_max_len
+                current_seq_len = lm_input.shape[1]
+                causal_mask = torch.tril(torch.ones((batch_size, current_seq_len, current_seq_len), device=lm_input.device)).to(torch.bool)
 
-            current_seq_len = lm_input.shape[1]
-            causal_mask = torch.tril(torch.ones((batch_size, current_seq_len, current_seq_len), device=lm_input.device)).to(torch.bool)
+                # 生成位置索引矩阵，形状为 (batch_size, current_seq_len)
+                pos_indices = torch.arange(current_seq_len, device=lm_input.device).expand(batch_size, current_seq_len)
 
-            # 生成位置索引矩阵，形状为 (batch_size, current_seq_len)
-            pos_indices = torch.arange(current_seq_len, device=lm_input.device).expand(batch_size, current_seq_len)
+                # 有效内容从 (总长度 - 有效长度) 的索引开始
+                start_indices = current_seq_len - lm_input_len  # 形状 (batch_size,)
+                start_indices_expanded = start_indices.unsqueeze(1).expand(-1, current_seq_len)
 
-            # 有效内容从 (总长度 - 有效长度) 的索引开始
-            start_indices = current_seq_len - lm_input_len  # 形状 (batch_size,)
-            start_indices_expanded = start_indices.unsqueeze(1).expand(-1, current_seq_len)
+                # 生成正确的二维填充掩码：位置索引 >= 起始索引 的位置为有效Token (True)
+                padding_mask_2d = pos_indices >= start_indices_expanded
 
-            # 生成正确的二维填充掩码：位置索引 >= 起始索引 的位置为有效Token (True)
-            padding_mask_2d = pos_indices >= start_indices_expanded
+                # 后续步骤保持不变：将二维掩码扩展为三维注意力掩码
+                padding_mask = padding_mask_2d.unsqueeze(1) & padding_mask_2d.unsqueeze(2)
 
-            # 后续步骤保持不变：将二维掩码扩展为三维注意力掩码
-            padding_mask = padding_mask_2d.unsqueeze(1) & padding_mask_2d.unsqueeze(2)
+                masks = causal_mask & padding_mask
+                #masks = torch.tril(torch.ones((batch_size, lm_input.shape[1], lm_input.shape[1]), device=lm_input.device)).to(torch.bool)
+                y_pred, cache = self.llm.forward_one_step(lm_input,
+                                                            masks=masks,
+                                                            cache=cache)
+                #logging.info(f"y_pred.shape {y_pred.shape}")
+                logp = self.llm_decoder(y_pred[:, -1]).log_softmax(dim=-1) # (batch_size, vocab_size)
+                #logging.info(f"logp.shape {logp.shape}")
+                ignore_eos_list = [i < min_len[idx].item() for idx in range(batch_size)]
+                top_ids_batch = self.sampling_ids_batch(logp, out_tokens_list, sampling, ignore_eos_list=ignore_eos_list)
 
-            masks = causal_mask & padding_mask
-            #masks = torch.tril(torch.ones((batch_size, lm_input.shape[1], lm_input.shape[1]), device=lm_input.device)).to(torch.bool)
-            y_pred, cache = self.llm.forward_one_step(lm_input,
-                                                        masks=masks,
-                                                        cache=cache)
-            #logging.info(f"y_pred.shape {y_pred.shape}")
-            logp = self.llm_decoder(y_pred[:, -1]).log_softmax(dim=-1) # (batch_size, vocab_size)
-            #logging.info(f"logp.shape {logp.shape}")
-            ignore_eos_list = [i < min_len[idx].item() for idx in range(batch_size)]
-            top_ids_batch = self.sampling_ids_batch(logp, out_tokens_list, sampling, ignore_eos_list=ignore_eos_list)
+                hit_eos = (top_ids_batch == self.speech_token_size) & active_mask
+                active_mask &= ~hit_eos
 
-            hit_eos = (top_ids_batch == self.speech_token_size) & active_mask
-            active_mask &= ~hit_eos
+                if not active_mask.any():
+                    break  # 所有样本都已完成生成
 
-            if not active_mask.any():
-                break  # 所有样本都已完成生成
+                ignore = (top_ids_batch > self.speech_token_size) & active_mask
 
-            ignore = (top_ids_batch > self.speech_token_size) & active_mask
+                if not ignore.any():
+                    yield top_ids_batch, active_mask.clone()
 
-            if not ignore.any():
-                yield top_ids_batch, active_mask.clone()
-
-                for i in range(batch_size):
-                    if active_mask[i]:
-                        out_tokens_list[i].append(top_ids_batch[i].item())
-                lm_input = self.speech_embedding.weight[top_ids_batch].reshape(batch_size, 1, -1)
+                    for i in range(batch_size):
+                        if active_mask[i]:
+                            out_tokens_list[i].append(top_ids_batch[i].item())
+                    lm_input = self.speech_embedding.weight[top_ids_batch].reshape(batch_size, 1, -1)
 
 
     def sampling_ids_batch(

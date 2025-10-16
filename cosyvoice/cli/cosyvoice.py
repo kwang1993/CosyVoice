@@ -105,11 +105,8 @@ class CosyVoice:
 
     ### wkc added 
     def inference_zero_shot_batch(self, tts_texts, prompt_text, prompt_speech_16k, zero_shot_spk_id='', stream=False, speed=1.0, text_frontend=True):
-        #prompt_text = self.frontend.text_normalize(prompt_text, split=False, text_frontend=text_frontend)
-        #for i in tqdm(self.frontend.text_normalize(tts_text, split=True, text_frontend=text_frontend)):
-        #    if (not isinstance(i, Generator)) and len(i) < 0.5 * len(prompt_text):
-        #        logging.warning('synthesis text {} too short than prompt text {}, this may lead to bad performance'.format(i, prompt_text))
-        
+        logging.info("text_frontend disabled.")
+        assert not stream, "Not implemented stream = True"
         model_input = self.frontend.frontend_zero_shot_batch(tts_texts, prompt_text, prompt_speech_16k, self.sample_rate, zero_shot_spk_id)
         start_time = time.time()
         logging.info('synthesis texts {}'.format(tts_texts))
