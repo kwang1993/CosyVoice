@@ -88,6 +88,24 @@ class CosyVoice:
                 logging.info('yield speech len {}, rtf {}'.format(speech_len, (time.time() - start_time) / speech_len))
                 yield model_output
                 start_time = time.time()
+    
+    ### wkc added
+    def inference_sft_batch(self, tts_texts, spk_id, stream=False, speed=1.0, text_frontend=True):
+        logging.info("text_frontend disabled.")
+        assert not stream, "Not implemented stream = True"
+        model_input = self.frontend.frontend_sft_batch(tts_texts, spk_id)
+        start_time = time.time()
+        logging.info('synthesis text {}'.format(tts_texts))
+        batch_size = len(tts_texts)
+
+        total_speech_len = 0
+        for i, model_output in enumerate(self.model.tts_batch(**model_input, stream=stream, speed=speed)):
+            speech_len = model_output['tts_speech'].shape[1] / self.sample_rate
+            total_speech_len += speech_len
+            logging.info('yield speech len {}'.format(speech_len))
+            if i == batch_size - 1:
+                logging.info('yield total speech len {}, avg rtf {}'.format(total_speech_len, (time.time() - start_time) / total_speech_len))
+            yield model_output
 
     def inference_zero_shot(self, tts_text, prompt_text, prompt_speech_16k, zero_shot_spk_id='', stream=False, speed=1.0, text_frontend=True):
         prompt_text = self.frontend.text_normalize(prompt_text, split=False, text_frontend=text_frontend)
