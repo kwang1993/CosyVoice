@@ -109,12 +109,28 @@ def init_weights(m, mean=0.0, std=0.01):
 
 # Repetition Aware Sampling in VALL-E 2
 def ras_sampling(weighted_scores, decoded_tokens, sampling, top_p=0.8, top_k=25, win_size=10, tau_r=0.1):
-    top_ids = nucleus_sampling(weighted_scores, top_p=top_p, top_k=top_k)
-    rep_num = (torch.tensor(decoded_tokens[-win_size:]).to(weighted_scores.device) == top_ids).sum().item()
-    if rep_num >= win_size * tau_r:
-        top_ids = random_sampling(weighted_scores, decoded_tokens, sampling)
-    return top_ids
-
+    if weighted_scores.ndim == 2:
+        batch_size = weighted_scores.shape[0]
+        device = weighted_scores.device
+        top_ids = nucleus_sampling_batch(weighted_scores, top_p=top_p, top_k=top_k)
+        rep_mask = torch.zeros(batch_size, dtype=torch.bool, device=device)
+        for i in range(batch_size):
+            if len(decoded_tokens[i]) >= win_size:
+                recent_tokens = decoded_tokens[i][-win_size:]
+                rep_num = (torch.tensor(recent_tokens, device=device) == top_ids[i]).sum().item()
+                if rep_num >= win_size * tau_r:
+                    rep_mask[i] = True
+        if rep_mask.any():
+            resample_scores = weighted_scores[rep_mask]
+            resampled_ids = random_sampling_batch(resample_scores, decoded_tokens, sampling)
+            top_ids[rep_mask] = resampled_ids
+        return top_ids
+    else:
+        top_ids = nucleus_sampling(weighted_scores, top_p=top_p, top_k=top_k)
+        rep_num = (torch.tensor(decoded_tokens[-win_size:]).to(weighted_scores.device) == top_ids).sum().item()
+        if rep_num >= win_size * tau_r:
+            top_ids = random_sampling(weighted_scores, decoded_tokens, sampling)
+        return top_ids
 
 def nucleus_sampling(weighted_scores, top_p=0.8, top_k=25):
     prob, indices = [], []
@@ -133,11 +149,51 @@ def nucleus_sampling(weighted_scores, top_p=0.8, top_k=25):
     top_ids = indices[prob.multinomial(1, replacement=True)]
     return top_ids
 
+def nucleus_sampling_batch(weighted_scores, top_p=0.8, top_k=25):
+    batch_size, vocab_size = weighted_scores.shape
+    
+    probs = torch.softmax(weighted_scores, dim=1)
+    sorted_probs, sorted_indices = torch.sort(probs, dim=1, descending=True, stable=True)
+    cumulative_probs = torch.cumsum(sorted_probs, dim=1)
+    
+    # 创建掩码：同时满足top-p和top-k条件
+    # top-p条件：累积概率小于阈值
+    top_p_mask = cumulative_probs < top_p
+    # top-k条件：索引位置小于k
+    top_k_mask = torch.arange(vocab_size, device=weighted_scores.device).unsqueeze(0) < top_k
+    # 合并条件
+    valid_mask = top_p_mask & top_k_mask
+    
+    # 确保每个样本至少有一个候选词
+    valid_mask[:, 0] = True
+    
+    # 创建过滤后的概率分布，无效位置设为0
+    filtered_probs = sorted_probs * valid_mask.float()
+    
+    # 重新归一化每个样本的概率分布，满足torch.multinomial的输入要求
+    sum_probs = filtered_probs.sum(dim=1, keepdim=True)
+    # 避免除零错误，对于全零行使用均匀分布
+    normalized_probs = torch.where(sum_probs > 0, 
+                                 filtered_probs / sum_probs,
+                                 torch.ones_like(filtered_probs) / vocab_size)
+    
+    # 从归一化后的分布中进行采样 [batch_size]
+    sampled_indices = torch.multinomial(normalized_probs, num_samples=1, replacement=True).squeeze(1)
+    
+    # 获取实际的词汇索引 [batch_size]
+    batch_indices = torch.arange(batch_size, device=weighted_scores.device)
+    top_ids = sorted_indices[batch_indices, sampled_indices]
+    
+    return top_ids
 
 def random_sampling(weighted_scores, decoded_tokens, sampling):
     top_ids = weighted_scores.softmax(dim=0).multinomial(1, replacement=True)
     return top_ids
 
+def random_sampling_batch(weighted_scores, decoded_tokens, sampling):
+    probabilities = torch.softmax(weighted_scores, dim=1)
+    top_ids = torch.multinomial(probabilities, num_samples=1, replacement=True).squeeze(1)
+    return top_ids
 
 def fade_in_out(fade_in_mel, fade_out_mel, window):
     device = fade_in_mel.device

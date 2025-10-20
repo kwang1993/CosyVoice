@@ -760,7 +760,7 @@ class Qwen2LM(TransformerLM):
                                                             cache=cache)
                 #logging.info(f"y_pred.shape {y_pred.shape}")
                 logp = self.llm_decoder(y_pred[:, -1]).log_softmax(dim=-1) # (batch_size, vocab_size)
-                #logging.info(f"logp.shape {logp.shape}")
+                # logging.info(f"logp.shape {logp.shape}")
                 ignore_eos_list = [i < min_len[idx].item() for idx in range(batch_size)]
                 top_ids_batch = self.sampling_ids_batch(logp, out_tokens_list, sampling, ignore_eos_list=ignore_eos_list)
 
@@ -812,22 +812,41 @@ class Qwen2LM(TransformerLM):
             # 获取当前需要处理的样本索引
             active_indices = active_mask.nonzero(as_tuple=True)[0]
 
+            # for idx in active_indices:
+            #     if not active_mask[idx]:
+            #         continue
+
+            #     # 获取当前样本的数据
+            #     sample_scores = weighted_scores[idx]
+            #     sample_history = decoded_tokens_list[idx] if decoded_tokens_list else []
+            #     sample_ignore_eos = ignore_eos_list[idx]
+
+            #     # 使用原有的sampling函数进行采样
+            #     top_ids = self.sampling(sample_scores, sample_history, sampling)
+            #     final_top_ids[idx] = top_ids
+            #     trials_count[idx] += 1
+
+            #     # 检查停止条件：根据该样本独立的ignore_eos设置
+            #     if (not sample_ignore_eos) or (self.speech_token_size not in top_ids):
+            #         active_mask[idx] = False
+            #     else:
+            #         # 如果采样到EOS且需要忽略，继续尝试
+            #         if trials_count[idx] > max_trials:
+            #             # 达到最大尝试次数，强制完成并记录错误
+            #             active_mask[idx] = False
+
+            # 使用原有的sampling函数进行采样
+            # logging.info("weighted_scores.shape {weighted_scores.shape}") # (B, speech_token_size + 3)
+            final_top_ids = self.sampling(weighted_scores, decoded_tokens_list, sampling)
+
             for idx in active_indices:
                 if not active_mask[idx]:
                     continue
-
-                # 获取当前样本的数据
-                sample_scores = weighted_scores[idx]
-                sample_history = decoded_tokens_list[idx] if decoded_tokens_list else []
+                
                 sample_ignore_eos = ignore_eos_list[idx]
-
-                # 使用原有的sampling函数进行采样
-                top_ids = self.sampling(sample_scores, sample_history, sampling)
-                final_top_ids[idx] = top_ids
                 trials_count[idx] += 1
-
                 # 检查停止条件：根据该样本独立的ignore_eos设置
-                if (not sample_ignore_eos) or (self.speech_token_size not in top_ids):
+                if (not sample_ignore_eos) or (self.speech_token_size not in final_top_ids[idx]):
                     active_mask[idx] = False
                 else:
                     # 如果采样到EOS且需要忽略，继续尝试
