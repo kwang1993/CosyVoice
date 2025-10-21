@@ -95,7 +95,7 @@ class CosyVoice:
         assert not stream, "Not implemented stream = True"
         model_input = self.frontend.frontend_sft_batch(tts_texts, spk_id)
         start_time = time.time()
-        logging.info('synthesis text {}'.format(tts_texts))
+        #logging.info('synthesis text {}'.format(tts_texts))
         batch_size = len(tts_texts)
 
         total_speech_len = 0
@@ -127,7 +127,7 @@ class CosyVoice:
         assert not stream, "Not implemented stream = True"
         model_input = self.frontend.frontend_zero_shot_batch(tts_texts, prompt_text, prompt_speech_16k, self.sample_rate, zero_shot_spk_id)
         start_time = time.time()
-        logging.info('synthesis texts {}'.format(tts_texts))
+        #logging.info('synthesis texts {}'.format(tts_texts))
         batch_size = len(tts_texts)
 
         total_speech_len = 0

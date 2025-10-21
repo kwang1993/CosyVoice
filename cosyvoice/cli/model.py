@@ -424,7 +424,7 @@ class CosyVoice2Model(CosyVoiceModel):
             if self.hift_cache_dict[uuid] is not None:
                 tts_speech = fade_in_out(tts_speech, self.hift_cache_dict[uuid]['speech'], self.speech_window)
         logging.info(f"tts_mel.shape {tts_mel.shape}")
-        logging.info(f"tts_mel_lengths {tts_mel_lengths}")
+        #logging.info(f"tts_mel_lengths {tts_mel_lengths}")
         tts_speech_lengths = (tts_speech.shape[1] * tts_mel_lengths/tts_mel.shape[2]).to(torch.int)
         return tts_speech, tts_speech_lengths
 
@@ -499,7 +499,7 @@ class CosyVoice2Model(CosyVoiceModel):
             this_tts_speech_token = torch.nn.utils.rnn.pad_sequence(list_of_tensors, batch_first=True)
             this_tts_speech_token_len = [len(tts_speech_tokens) for tts_speech_tokens in self.tts_speech_token_dict[this_uuid]]
             logging.info(f"this_tts_speech_token.shape {this_tts_speech_token.shape}")
-            logging.info(f"this_tts_speech_token_len {this_tts_speech_token_len}")
+            #logging.info(f"this_tts_speech_token_len {this_tts_speech_token_len}")
 
             this_tts_speech, tts_speech_lengths = self.token2wav_batch(token=this_tts_speech_token,
                                                 token_len=this_tts_speech_token_len,
@@ -510,7 +510,8 @@ class CosyVoice2Model(CosyVoiceModel):
                                                 uuid=this_uuid,
                                                 finalize=True,
                                                 speed=speed)
-            logging.info(f"this_tts_speech.shape {this_tts_speech.shape}, tts_speech_lengths {tts_speech_lengths}")
+            logging.info(f"this_tts_speech.shape {this_tts_speech.shape}")
+            #logging.info(f"tts_speech_lengths {tts_speech_lengths}")
             for i, tts_speech in enumerate(this_tts_speech):
                 tts_speech = this_tts_speech[i][:tts_speech_lengths[i]].unsqueeze(0)
                 yield {'tts_speech': tts_speech.cpu()}
