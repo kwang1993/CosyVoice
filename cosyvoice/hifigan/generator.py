@@ -32,7 +32,7 @@ from torch.distributions.uniform import Uniform
 from cosyvoice.transformer.activation import Snake
 from cosyvoice.utils.common import get_padding
 from cosyvoice.utils.common import init_weights
-
+from cosyvoice.utils.file_utils import logging
 
 """hifigan based generator implementation.
 
@@ -527,8 +527,8 @@ class HiFTGenerator(nn.Module):
             x = self.ups[i](x)
 
             if i == self.num_upsamples - 1:
+                logging.info(f"reflection_pad input shape {x.shape},  x.numel() {x.numel()} < (2**31)? {x.numel() < (2**31)}")
                 x = self.reflection_pad(x)
-
             # fusion
             si = self.source_downs[i](s_stft)
             si = self.source_resblocks[i](si)

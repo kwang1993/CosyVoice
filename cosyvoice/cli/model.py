@@ -386,6 +386,27 @@ class CosyVoice2Model(CosyVoiceModel):
             torch.cuda.current_stream().synchronize()
 
     ### wkc added
+    def safe_hift_inference(self, tts_mel, hift_cache_source, safety_factor = 0.8):
+        max_numel = int(2**31 / 96 * safety_factor)  # speech张量元素个数是tts_mel的96倍，张量过大报错
+        if tts_mel.numel() < max_numel:
+            tts_speech, tts_source = self.hift.inference(speech_feat=tts_mel, cache_source=hift_cache_source)
+        else: # 拆分
+            nparts = int(1 + tts_mel.numel() / max_numel)
+            sub_batch_size = int(tts_mel.size(0) / nparts)
+            logging.info(f"hift.inference sub_batch_size {sub_batch_size}")
+            tts_speech_parts = []
+            tts_source_parts = []
+            for i in range(nparts):
+                sub_tts_mel = tts_mel[i*sub_batch_size: (i+1)*sub_batch_size] if i < nparts - 1 else tts_mel[i*sub_batch_size:]
+                sub_hift_cache_source = hift_cache_source[i*sub_batch_size: (i+1)*sub_batch_size] if i < nparts - 1 else hift_cache_source[i*sub_batch_size:]
+                tts_speech, tts_source = self.hift.inference(speech_feat=sub_tts_mel, cache_source=sub_hift_cache_source)
+                tts_speech_parts.append(tts_speech)
+                tts_source_parts.append(tts_source)
+            tts_speech = torch.cat(tts_speech_parts, dim=0)
+            tts_source = torch.cat(tts_source_parts, dim=0)
+        return tts_speech, tts_source
+    
+    ### wkc added
     def token2wav_batch(self, token, token_len, prompt_token, prompt_feat, embedding, token_offset, uuid, stream=False, finalize=False, speed=1.0):
         batch_size = token.size(0)
         with torch.cuda.amp.autocast(self.fp16):
@@ -405,9 +426,12 @@ class CosyVoice2Model(CosyVoiceModel):
             tts_mel = torch.concat([hift_cache_mel, tts_mel], dim=2)
         else:
             hift_cache_source = torch.zeros(batch_size, 1, 0)
+        logging.info(f"tts_mel.shape {tts_mel.shape}")
+        #logging.info(f"tts_mel_lengths {tts_mel_lengths}")
         # keep overlap mel and hift cache
         if finalize is False:
-            tts_speech, tts_source = self.hift.inference(speech_feat=tts_mel, cache_source=hift_cache_source)
+            # tts_speech, tts_source = self.hift.inference(speech_feat=tts_mel, cache_source=hift_cache_source)
+            tts_speech, tts_source = self.safe_hift_inference(tts_mel, hift_cache_source)
             if self.hift_cache_dict[uuid] is not None:
                 tts_speech = fade_in_out(tts_speech, self.hift_cache_dict[uuid]['speech'], self.speech_window)
             self.hift_cache_dict[uuid] = {'mel': tts_mel[:, :, -self.mel_cache_len:],
@@ -419,12 +443,12 @@ class CosyVoice2Model(CosyVoiceModel):
                 assert self.hift_cache_dict[uuid] is None, 'speed change only support non-stream inference mode'
                 tts_mel = F.interpolate(tts_mel, size=int(tts_mel.shape[2] / speed), mode='linear')
                 tts_mel_lengths = (tts_mel_lengths / speed).to(torch.int)  # 将结果转换为整数
-
-            tts_speech, tts_source = self.hift.inference(speech_feat=tts_mel, cache_source=hift_cache_source)
+            
+            #tts_speech, tts_source = self.hift.inference(speech_feat=tts_mel, cache_source=hift_cache_source)
+            tts_speech, tts_source = self.safe_hift_inference(tts_mel, hift_cache_source)
             if self.hift_cache_dict[uuid] is not None:
                 tts_speech = fade_in_out(tts_speech, self.hift_cache_dict[uuid]['speech'], self.speech_window)
-        logging.info(f"tts_mel.shape {tts_mel.shape}")
-        #logging.info(f"tts_mel_lengths {tts_mel_lengths}")
+
         tts_speech_lengths = (tts_speech.shape[1] * tts_mel_lengths/tts_mel.shape[2]).to(torch.int)
         return tts_speech, tts_speech_lengths
 
