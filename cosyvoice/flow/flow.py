@@ -295,9 +295,9 @@ class CausalMaskedDiffWithXvec(torch.nn.Module):
         # xvec projection
         embedding = F.normalize(embedding, dim=1)
         embedding = self.spk_embed_affine_layer(embedding)
-
         # concat text and prompt_text
-        batch_size = token.size(0)
+        batch_size = token.size(0)        
+        embedding = embedding.expand(batch_size, -1)
         token, token_len = torch.concat([prompt_token.expand(batch_size, -1), token], dim=1), prompt_token_len + token_len
         mask = (~make_pad_mask(token_len)).unsqueeze(-1).to(embedding)
         token = self.input_embedding(torch.clamp(token, min=0)) * mask
