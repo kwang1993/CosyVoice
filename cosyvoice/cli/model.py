@@ -393,7 +393,7 @@ class CosyVoice2Model(CosyVoiceModel):
         else: # 拆分
             nparts = int(1 + tts_mel.numel() / max_numel)
             sub_batch_size = int(tts_mel.size(0) / nparts)
-            logging.info(f"hift.inference sub_batch_size {sub_batch_size}")
+            logging.debug(f"hift.inference sub_batch_size {sub_batch_size}")
             tts_speech_parts = []
             tts_source_parts = []
             for i in range(nparts):
@@ -426,7 +426,7 @@ class CosyVoice2Model(CosyVoiceModel):
             tts_mel = torch.concat([hift_cache_mel, tts_mel], dim=2)
         else:
             hift_cache_source = torch.zeros(batch_size, 1, 0)
-        logging.info(f"tts_mel.shape {tts_mel.shape}")
+        logging.debug(f"tts_mel.shape {tts_mel.shape}")
         #logging.info(f"tts_mel_lengths {tts_mel_lengths}")
         # keep overlap mel and hift cache
         if finalize is False:
@@ -464,7 +464,7 @@ class CosyVoice2Model(CosyVoiceModel):
         with self.lock:
             self.tts_speech_token_dict[this_uuid], self.llm_end_dict[this_uuid] = [], False
             self.hift_cache_dict[this_uuid] = None
-        logging.info("Before llm_job_batch")
+        logging.debug("Before llm_job_batch")
         if source_speech_token.shape[1] == 0:
             p = threading.Thread(target=self.llm_job_batch, args=(text, text_len, prompt_text, llm_prompt_speech_token, llm_embedding, this_uuid))
         else:
@@ -505,7 +505,7 @@ class CosyVoice2Model(CosyVoiceModel):
         else:
             # deal with all tokens
             p.join()
-            logging.info("After llm_job_batch")
+            logging.debug("After llm_job_batch")
             # for idx in range(batch_size):
             #     this_tts_speech_token = torch.tensor(self.tts_speech_token_dict[this_uuid][idx]).unsqueeze(dim=0)
             #     this_tts_speech = self.token2wav(token=this_tts_speech_token,
@@ -522,7 +522,7 @@ class CosyVoice2Model(CosyVoiceModel):
             list_of_tensors = [torch.tensor(token_list) for token_list in list_of_token_lists]
             this_tts_speech_token = torch.nn.utils.rnn.pad_sequence(list_of_tensors, batch_first=True)
             this_tts_speech_token_len = [len(tts_speech_tokens) for tts_speech_tokens in self.tts_speech_token_dict[this_uuid]]
-            logging.info(f"this_tts_speech_token.shape {this_tts_speech_token.shape}")
+            logging.debug(f"this_tts_speech_token.shape {this_tts_speech_token.shape}")
             #logging.info(f"this_tts_speech_token_len {this_tts_speech_token_len}")
 
             this_tts_speech, tts_speech_lengths = self.token2wav_batch(token=this_tts_speech_token,
@@ -534,7 +534,7 @@ class CosyVoice2Model(CosyVoiceModel):
                                                 uuid=this_uuid,
                                                 finalize=True,
                                                 speed=speed)
-            logging.info(f"this_tts_speech.shape {this_tts_speech.shape}")
+            logging.debug(f"this_tts_speech.shape {this_tts_speech.shape}")
             #logging.info(f"tts_speech_lengths {tts_speech_lengths}")
             for i, tts_speech in enumerate(this_tts_speech):
                 tts_speech = this_tts_speech[i][:tts_speech_lengths[i]].unsqueeze(0)

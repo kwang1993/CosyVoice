@@ -655,7 +655,7 @@ class Qwen2LM(TransformerLM):
         min_len = ((texts_len - prompt_text_len) * min_token_text_ratio).to(torch.int)
         max_len = ((texts_len - prompt_text_len) * max_token_text_ratio).to(torch.int)
 
-        logging.info("In llm.inference_batch")
+        logging.debug("In llm.inference_batch")
         # 5. step by step decode
         for token in self.inference_wrapper_batch(lm_input, lm_input_len, sampling, min_len, max_len, uuid):
             yield token
@@ -731,8 +731,8 @@ class Qwen2LM(TransformerLM):
             cache = None
             max_max_len = max_len.max().item()
 
-            logging.info("Before llm.forward_one_step")
-            logging.info(f"lm_input.shape {lm_input.shape}")
+            logging.debug("Before llm.forward_one_step")
+            logging.debug(f"lm_input.shape {lm_input.shape}")
             for i in range(max_max_len):
                 reached_max_len = (i >= max_len) & active_mask
                 active_mask &= ~reached_max_len

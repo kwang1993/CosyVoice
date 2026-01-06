@@ -102,9 +102,9 @@ class CosyVoice:
         for i, model_output in enumerate(self.model.tts_batch(**model_input, stream=stream, speed=speed)):
             speech_len = model_output['tts_speech'].shape[1] / self.sample_rate
             total_speech_len += speech_len
-            logging.info('yield speech len {}'.format(speech_len))
+            logging.debug('yield speech len {}'.format(speech_len))
             if i == batch_size - 1:
-                logging.info('yield total speech len {}, avg rtf {}'.format(total_speech_len, (time.time() - start_time) / total_speech_len))
+                logging.debug('yield total speech len {}, avg rtf {}'.format(total_speech_len, (time.time() - start_time) / total_speech_len))
             yield model_output
 
     def inference_zero_shot(self, tts_text, prompt_text, prompt_speech_16k, zero_shot_spk_id='', stream=False, speed=1.0, text_frontend=True):
@@ -134,9 +134,9 @@ class CosyVoice:
         for i, model_output in enumerate(self.model.tts_batch(**model_input, stream=stream, speed=speed)):
             speech_len = model_output['tts_speech'].shape[1] / self.sample_rate
             total_speech_len += speech_len
-            logging.info('yield speech len {}'.format(speech_len))
+            logging.debug('yield speech len {}'.format(speech_len))
             if i == batch_size - 1:
-                logging.info('yield total speech len {}, avg rtf {}'.format(total_speech_len, (time.time() - start_time) / total_speech_len))
+                logging.debug('yield total speech len {}, avg rtf {}'.format(total_speech_len, (time.time() - start_time) / total_speech_len))
             yield model_output
 
     def inference_cross_lingual(self, tts_text, prompt_speech_16k, zero_shot_spk_id='', stream=False, speed=1.0, text_frontend=True):

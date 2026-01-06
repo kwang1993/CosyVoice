@@ -202,7 +202,7 @@ class CosyVoiceFrontEnd:
         #tts_text_token, tts_text_token_len = self._extract_text_token(tts_texts[0])
         #logging.info(f"tts_text_token.shape {tts_text_token.shape}, tts_text_token_len: {tts_text_token_len} ")
         tts_text_token, tts_text_token_len = self._extract_text_token_batch(tts_texts)
-        logging.info(f"tts_text_token.shape {tts_text_token.shape}")
+        logging.debug(f"tts_text_token.shape {tts_text_token.shape}")
         # logging.info(f"tts_text_token_len: {tts_text_token_len}")
         if zero_shot_spk_id == '':
             prompt_text_token, prompt_text_token_len = self._extract_text_token(prompt_text)

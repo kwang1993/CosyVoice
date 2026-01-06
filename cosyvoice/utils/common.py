@@ -115,11 +115,10 @@ def ras_sampling(weighted_scores, decoded_tokens, sampling, top_p=0.8, top_k=25,
         top_ids = nucleus_sampling_batch(weighted_scores, top_p=top_p, top_k=top_k)
         rep_mask = torch.zeros(batch_size, dtype=torch.bool, device=device)
         for i in range(batch_size):
-            if len(decoded_tokens[i]) >= win_size:
-                recent_tokens = decoded_tokens[i][-win_size:]
-                rep_num = (torch.tensor(recent_tokens, device=device) == top_ids[i]).sum().item()
-                if rep_num >= win_size * tau_r:
-                    rep_mask[i] = True
+            recent_tokens = decoded_tokens[i][-win_size:]
+            rep_num = (torch.tensor(recent_tokens, device=device) == top_ids[i]).sum().item()
+            if rep_num >= win_size * tau_r:
+                rep_mask[i] = True
         if rep_mask.any():
             resample_scores = weighted_scores[rep_mask]
             resampled_ids = random_sampling_batch(resample_scores, decoded_tokens, sampling)
@@ -156,10 +155,14 @@ def nucleus_sampling_batch(weighted_scores, top_p=0.8, top_k=25):
     sorted_probs, sorted_indices = torch.sort(probs, dim=1, descending=True, stable=True)
     cumulative_probs = torch.cumsum(sorted_probs, dim=1)
     
-    # 创建掩码：同时满足top-p和top-k条件
-    # top-p条件：累积概率小于阈值
-    top_p_mask = cumulative_probs < top_p
-    # top-k条件：索引位置小于k
+    # 创建掩码：满足cum_prob < top_p and len(prob) < top_k
+    # top-p条件：不含当前prob的累积概率小于top_p
+    shifted_cum_probs = torch.cat([
+        torch.zeros(batch_size, 1, device=weighted_scores.device),  # 第一个位置的前缀和是0
+        cumulative_probs[:, :-1]  # 去掉最后一个，整体后移
+    ], dim=1)
+    top_p_mask = shifted_cum_probs < top_p
+    # top-k条件：索引位置0...top_k-1，共top_k个
     top_k_mask = torch.arange(vocab_size, device=weighted_scores.device).unsqueeze(0) < top_k
     # 合并条件
     valid_mask = top_p_mask & top_k_mask
